@@ -1,0 +1,15 @@
+# HTTP on port 8080, and a watcher when WEBTHUMB_WATCH and WEBTHUMB_OUTPUT are set.
+# Watch only, with no HTTP server:
+#   command: ["watch", "/data/in", "-o", "/data/out", "-r"]
+services:
+  webpthumb:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      WEBTHUMB_WATCH: /data/in
+      WEBTHUMB_OUTPUT: /data/out
+      WEBTHUMB_RECURSIVE: "1"
+    volumes:
+      - ./in:/data/in
+      - ./out:/data/out

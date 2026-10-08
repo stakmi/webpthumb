@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "webpthumb"
+version = "0.1.0"
+description = "WebP thumbnails for images and PDFs, from the CLI, HTTP, or a folder watcher"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["webp", "thumbnail", "pdf", "image", "heif", "heic", "watchdog"]
+dependencies = [
+    "pdfthumb>=0.1.2",
+    "image-to-webp[heif]>=0.1.0",
+    "watchdog>=4",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "httpx>=0.27"]
+
+[project.scripts]
+webpthumb = "webpthumb.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
