@@ -1,0 +1,167 @@
+name: Publish to PyPI
+
+# Release flow:
+#   1. On GitHub: Releases -> "Draft a new release" -> tag such as 0.1.0 or v0.1.0 -> Publish.
+#   2. This workflow tests, stamps that tag onto the package version, builds,
+#      publishes to PyPI, and attaches the wheel and sdist to the release.
+# Manual "Run workflow" builds the version already in pyproject.toml and
+# publishes it to TestPyPI.
+#
+# One-time PyPI setup (trusted publishing, no API token):
+#   https://pypi.org/manage/account/publishing/
+#   owner stakmi, repository webpthumb, workflow publish.yml, environment pypi
+# TestPyPI (only needed for the manual run):
+#   https://test.pypi.org/manage/account/publishing/
+#   same repository and workflow, environment testpypi
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: python -m pip install --upgrade build twine packaging
+      - name: Set package version from the release tag
+        id: version
+        env:
+          TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
+        run: |
+          python - <<'PY'
+          import os, pathlib, re, sys
+          from packaging.version import InvalidVersion, Version
+
+          def read(path, pattern):
+              text = pathlib.Path(path).read_text()
+              match = re.search(pattern, text, flags=re.M)
+              if not match:
+                  sys.exit(f"::error::version not found in {path}")
+              return match.group(1), text
+
+          py_ver, py_text = read("pyproject.toml", r'^version = "(.*)"$')
+          init_ver, init_text = read("src/webpthumb/__init__.py", r'^__version__ = "(.*)"$')
+          if py_ver != init_ver:
+              sys.exit(f"::error::pyproject.toml version {py_ver} != __version__ {init_ver}")
+
+          tag = os.environ.get("TAG", "")
+          if tag:
+              raw = tag[1:] if tag.startswith("v") else tag
+              try:
+                  version = str(Version(raw))
+              except InvalidVersion:
+                  sys.exit(f"::error::Release tag {tag!r} is not a PEP 440 version (use 1.2.3 or v1.2.3)")
+              py_text, n = re.subn(r'^version = ".*"$', f'version = "{version}"', py_text, flags=re.M)
+              init_text, n2 = re.subn(
+                  r'^__version__ = ".*"$', f'__version__ = "{version}"', init_text, flags=re.M
+              )
+              if n != 1 or n2 != 1:
+                  sys.exit("::error::failed to stamp the release version")
+              pathlib.Path("pyproject.toml").write_text(py_text)
+              pathlib.Path("src/webpthumb/__init__.py").write_text(init_text)
+          else:
+              try:
+                  version = str(Version(py_ver))
+              except InvalidVersion:
+                  sys.exit(f"::error::pyproject.toml version {py_ver!r} is not a PEP 440 version")
+
+          print(f"Building version {version}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"version={version}\n")
+          PY
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Check distributions
+        run: twine check --strict dist/*
+      - name: Verify the wheel installs
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python -m venv /tmp/v
+          /tmp/v/bin/pip install dist/*.whl
+          /tmp/v/bin/webpthumb --help
+          /tmp/v/bin/python -c "import os, webpthumb, importlib.metadata as m; got = m.version('webpthumb'); assert webpthumb.__version__ == got == os.environ['VERSION'], (webpthumb.__version__, got, os.environ['VERSION']); print(got)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/webpthumb
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  publish-pypi:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/webpthumb
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  upload-release-assets:
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Attach distributions to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
